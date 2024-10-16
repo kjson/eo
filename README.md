@@ -1,5 +1,5 @@
 # eo
-Command line tool to quickly edit files in object stores.
+Command line tool to quickly edit files in object stores with `$EDITOR`.
 
 ## Usage
 

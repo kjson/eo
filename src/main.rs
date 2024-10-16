@@ -1,3 +1,5 @@
+mod storage;
+
 use anyhow::Result;
 use clap::{ArgGroup, Parser};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -7,12 +9,9 @@ use std::{
     process::{exit, Command},
     sync::Arc,
 };
+use storage::{CloudStorage, S3Storage};
 use tempfile::NamedTempFile;
 use tokio::{sync::mpsc, task};
-
-mod storage;
-
-use storage::{CloudStorage, S3Storage};
 
 /// S3 Editor Utility
 #[derive(Parser, Debug)]
