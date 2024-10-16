@@ -11,3 +11,4 @@ tempfile = "3.3"
 anyhow = "1.0"
 notify = "5.2"
 clap = { version = "4.0", features = ["derive"] }
+google-cloud-storage = "0.22.1"

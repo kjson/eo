@@ -10,35 +10,39 @@ use std::{
     process::{exit, Command},
     sync::Arc,
 };
-use storage::{CloudStorage, S3Storage};
+use storage::{CloudStorage, GCSStorage, S3Storage};
 use tempfile::NamedTempFile;
 use tokio::{sync::mpsc, task};
 
-/// S3 Editor Utility
+/// Cloud Storage Editor Utility
 #[derive(Parser, Debug)]
 #[command(
     name = "eo",
     version = "1.0",
-    about = "A tool to edit files directly in S3"
+    about = "A tool to edit files directly in cloud object storage"
 )]
-#[command(group(ArgGroup::new("s3")
+#[command(group(ArgGroup::new("storage")
     .required(true)
     .args(&["uri", "bucket"])
 ))]
 struct Cli {
-    /// S3 bucket name (mutually exclusive with --uri)
+    /// Cloud storage provider (s3 for AWS S3, gcs for Google Cloud Storage)
+    #[arg(short, long, default_value = "s3")]
+    storage: String,
+
+    /// Bucket name (mutually exclusive with --uri)
     #[arg(long, short)]
     bucket: Option<String>,
 
-    /// S3 object key (mutually exclusive with --uri)
+    /// Object key (mutually exclusive with --uri)
     #[arg(long, short, requires = "bucket")]
     key: Option<String>,
 
-    /// S3 object URL (optional, mutually exclusive with --bucket and --key)
+    /// Object URL (optional, mutually exclusive with --bucket and --key)
     #[arg(long, short)]
     uri: Option<String>,
 
-    /// AWS region (optional, defaults to environment config)
+    /// Cloud region (optional, defaults to environment config)
     #[arg(long, short)]
     region: Option<String>,
 
@@ -51,18 +55,27 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Parse the S3 URI or use the bucket and key provided.
+    // Parse the URI or use the bucket and key provided.
     let (bucket, key) =
         uri::parse_uri(&cli.uri)?.unwrap_or_else(|| (cli.bucket.unwrap(), cli.key.unwrap()));
 
-    let storage_client = CloudStorage::S3(S3Storage::new(cli.region).await);
+    let storage_client = match cli.storage.as_str() {
+        "s3" => CloudStorage::S3(S3Storage::new(cli.region).await),
+        "gcs" => CloudStorage::GCS(GCSStorage::new(cli.region).await),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported storage provider: {}",
+                cli.storage
+            ))
+        }
+    };
 
-    s3_edit(storage_client, &bucket, &key, cli.file_path).await?;
+    cloud_edit(storage_client, &bucket, &key, cli.file_path).await?;
 
     Ok(())
 }
 
-async fn s3_edit(
+async fn cloud_edit(
     client: CloudStorage,
     bucket: &str,
     key: &str,
@@ -80,10 +93,10 @@ async fn s3_edit(
     // Channel to signal file watcher termination
     let (stop_tx, stop_rx) = mpsc::channel(1);
 
-    // Download file from S3 to temporary location
+    // Download file from cloud storage to temporary location
     client.download_file(bucket, key, &temp_path).await?;
 
-    // Watch file changes and sync with S3
+    // Watch file changes and sync with cloud storage
     let file_watcher_handle = task::spawn(watch_and_sync_file(
         Arc::clone(&temp_path),
         Arc::clone(&client),
@@ -127,6 +140,7 @@ async fn watch_and_sync_file(
     // Since the uploads are async, there's no guarantee they are processed in order by the storage system.
     let (tx, mut rx) = mpsc::unbounded_channel();
 
+    // TODO: debounce? See multiple uploads per save.
     let mut watcher = RecommendedWatcher::new(
         move |res| {
             if let Ok(Event {
