@@ -5,7 +5,7 @@ Command line tool to quickly edit files in object stores with `$EDITOR`.
 
 ```bash
 eo --help
-A tool to edit files directly in cloud object storage
+A tool to quickly edit files directly in cloud object storage
 
 Usage: eo [OPTIONS] --storage <STORAGE> <--uri <URI>|--bucket <BUCKET>>
 
@@ -23,17 +23,17 @@ Options:
 ## Examples
 
 ```bash
+# Specify a URI in S3.
+eo -u s3://mybucket/mykey
+
 # Edit a file in AWS S3
-eo -s s3 -b mybucket -k mykey
+eo -b mybucket -k mykey
 
 # Edit a file in Google Cloud Storage
 eo -s gcs -b mybucket -k mykey
 
 # Edit a file in AWS S3 using a custom file path
 eo -s s3 -b mybucket -k mykey -f /path/to/my/local/file
-
-# Specify a URI and region
-eo -s s3 -u s3://mybucket/mykey -r us-east-1
 ```
 
 ## Installation
