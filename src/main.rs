@@ -21,7 +21,7 @@ use tokio::{sync::mpsc, task};
     version = "1.0",
     about = "A tool to edit files directly in cloud object storage"
 )]
-#[command(group(ArgGroup::new("storage")
+#[command(group(ArgGroup::new("object_config")
     .required(true)
     .args(&["uri", "bucket"])
 ))]
