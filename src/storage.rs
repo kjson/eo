@@ -83,18 +83,15 @@ pub struct GCSStorage {
 }
 
 impl GCSStorage {
-    pub async fn new(region: Option<String>) -> Self {
-        // TODO: use region in client config.
-
-        // TODO: bubble up the error properly.
+    pub async fn new(_region: Option<String>) -> Result<Self> {
         let config = GCSClientConfig::default()
             .with_auth()
             .await
-            .expect("Failed to create GCS client");
+            .map_err(|e| anyhow::anyhow!("Failed to create GCS client: {}", e))?;
 
-        Self {
+        Ok(Self {
             client: GCSClient::new(config),
-        }
+        })
     }
 
     pub async fn download_file(&self, bucket: &str, key: &str, local_path: &Path) -> Result<()> {

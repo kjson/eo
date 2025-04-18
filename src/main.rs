@@ -12,7 +12,7 @@ use std::{
 };
 use storage::{CloudStorage, GCSStorage, S3Storage};
 use tempfile::NamedTempFile;
-use tokio::{sync::mpsc, task, time::{Duration, Instant, timeout}};
+use tokio::{sync::mpsc, task, time::{Duration, Instant}};
 
 /// Cloud Storage Editor Utility
 #[derive(Parser, Debug)]
@@ -42,7 +42,7 @@ struct Cli {
     #[arg(long, short)]
     uri: Option<String>,
 
-    /// Cloud region (optional, defaults to environment config)
+    /// AWS region (only used for S3, defaults to environment config)
     #[arg(long, short)]
     region: Option<String>,
 
@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
 
     let storage_client = match cli.storage.as_str() {
         "s3" => CloudStorage::S3(S3Storage::new(cli.region).await),
-        "gcs" => CloudStorage::GCS(GCSStorage::new(cli.region).await),
+        "gcs" => CloudStorage::GCS(GCSStorage::new(None).await?),
         _ => {
             return Err(anyhow::anyhow!(
                 "Unsupported storage provider: {}",
@@ -97,11 +97,11 @@ async fn cloud_edit(
             .unwrap_or_else(|| NamedTempFile::new().unwrap().into_temp_path().to_path_buf()),
     );
 
-    // Channel to signal file watcher termination
-    let (stop_tx, stop_rx) = mpsc::channel(1);
-
     // Download file from cloud storage to temporary location
     client.download_file(bucket, key, &temp_path).await?;
+
+    // Channel to signal file watcher termination
+    let (stop_tx, stop_rx) = mpsc::channel(1);
 
     // Watch file changes and sync with cloud storage
     let file_watcher_handle = task::spawn(watch_and_sync_file(
@@ -151,16 +151,22 @@ async fn watch_and_sync_file(
 
     let mut watcher = RecommendedWatcher::new(
         move |res| {
-            if let Ok(Event {
-                kind: EventKind::Modify(_),
-                ..
-            }) = res
-            {
-                let _ = tx.send(());
+            match res {
+                Ok(Event {
+                    kind: EventKind::Modify(_),
+                    ..
+                }) => {
+                    if let Err(e) = tx.send(()) {
+                        eprintln!("Failed to send file change notification: {}", e);
+                    }
+                }
+                Ok(_) => {} // Ignore other event types
+                Err(e) => eprintln!("Error watching file: {}", e),
             }
         },
         notify::Config::default(),
     )?;
+    
     watcher.watch(&file_path, RecursiveMode::NonRecursive)?;
 
     loop {
@@ -182,7 +188,9 @@ async fn watch_and_sync_file(
                 }
             }, if debounce_timer.is_some() => {
                 if last_event.elapsed() >= debounce_duration {
-                    storage_client.upload_file(&bucket, &key, &file_path).await?;
+                    if let Err(e) = storage_client.upload_file(&bucket, &key, &file_path).await {
+                        eprintln!("Failed to sync changes to S3: {}", e);
+                    }
                 }
                 debounce_timer = None;
             }
