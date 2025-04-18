@@ -12,7 +12,7 @@ use std::{
 };
 use storage::{CloudStorage, GCSStorage, S3Storage};
 use tempfile::NamedTempFile;
-use tokio::{sync::mpsc, task};
+use tokio::{sync::mpsc, task, time::{Duration, Instant, timeout}};
 
 /// Cloud Storage Editor Utility
 #[derive(Parser, Debug)]
@@ -49,6 +49,10 @@ struct Cli {
     /// Local file path (optional, if you want to use your own temp file location)
     #[arg(long, short)]
     file_path: Option<String>,
+
+    /// Debounce writes interval (optional, defaults to 500ms)
+    #[arg(long, short)]
+    debounce: Option<u64>,
 }
 
 #[tokio::main]
@@ -70,7 +74,9 @@ async fn main() -> Result<()> {
         }
     };
 
-    cloud_edit(storage_client, &bucket, &key, cli.file_path).await?;
+    let debounce_duration = Duration::from_millis(cli.debounce.unwrap_or(500));
+
+    cloud_edit(storage_client, &bucket, &key, cli.file_path, debounce_duration).await?;
 
     Ok(())
 }
@@ -80,6 +86,7 @@ async fn cloud_edit(
     bucket: &str,
     key: &str,
     file_path: Option<String>,
+    debounce_duration: Duration,
 ) -> Result<()> {
     let client = Arc::new(client);
 
@@ -103,6 +110,7 @@ async fn cloud_edit(
         bucket.to_string(),
         key.to_string(),
         stop_rx,
+        debounce_duration,
     ));
 
     // Open the file in the user's preferred editor
@@ -135,12 +143,12 @@ async fn watch_and_sync_file(
     bucket: String,
     key: String,
     mut stop_rx: mpsc::Receiver<()>,
+    debounce_duration: Duration,
 ) -> Result<()> {
-    // Note: we don't debounce the file modification events here, so all saves will trigger an upload.
-    // Since the uploads are async, there's no guarantee they are processed in order by the storage system.
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut last_event = Instant::now();
+    let mut debounce_timer = None;
 
-    // TODO: debounce? See multiple uploads per save.
     let mut watcher = RecommendedWatcher::new(
         move |res| {
             if let Ok(Event {
@@ -157,11 +165,28 @@ async fn watch_and_sync_file(
 
     loop {
         tokio::select! {
-            // Check for file modification
+            // File modification event
             Some(_) = rx.recv() => {
-                storage_client.upload_file(&bucket, &key, &file_path).await?;
+                last_event = Instant::now();
+                if debounce_timer.is_none() {
+                    let duration = debounce_duration;
+                    debounce_timer = Some(tokio::spawn(async move {
+                        tokio::time::sleep(duration).await;
+                    }));
+                }
             }
-            // Check if we received the stop signal
+            // Check if debounce timer expired
+            _ = async {
+                if let Some(timer) = &mut debounce_timer {
+                    let _: Result<(), _> = timer.await;
+                }
+            }, if debounce_timer.is_some() => {
+                if last_event.elapsed() >= debounce_duration {
+                    storage_client.upload_file(&bucket, &key, &file_path).await?;
+                }
+                debounce_timer = None;
+            }
+            // Stop signal
             _ = stop_rx.recv() => {
                 break;
             }
